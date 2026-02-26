@@ -10,6 +10,7 @@ import altair as alt
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import AgglomerativeClustering
+from scipy.sparse import hstack
 
 
 # -----------------------------
@@ -126,7 +127,7 @@ def _cluster_texts(texts, distance_threshold=0.35):
     Xc = v_char.fit_transform(texts)
 
     # weighted blend
-    X = (0.65 * Xw) + (0.35 * Xc)
+    X = hstack([Xw.multiply(0.65), Xc.multiply(0.35)])
 
     sim = cosine_similarity(X)
     dist = 1 - sim
@@ -254,8 +255,8 @@ def generate_trends(df: pd.DataFrame):
 # UI
 # -----------------------------
 
-st.set_page_config(page_title="QE Trends — Demo", page_icon="📊", layout="wide")
-st.title("📊 QE Trend Dashboard — Live Demo (kein API)")
+st.set_page_config(page_title="Deviations Trending MVP", page_icon="📊", layout="wide")
+st.title("📊 Deviations Trending MVP")
 st.caption("Upload Excel für Live-Analyse oder lade vorhandenes trends.json.")
 
 mode = st.radio("Modus", ["Live-Analyse (Excel Upload)", "Repository-Modus (trends.json)"], horizontal=True)

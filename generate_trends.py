@@ -16,6 +16,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import AgglomerativeClustering
+from scipy.sparse import hstack
 
 REQUIRED_FIELDS = [
     "Name (QE)",
@@ -119,7 +120,7 @@ def _cluster_texts(texts, distance_threshold=0.35):
 
     Xw = v_word.fit_transform(texts)
     Xc = v_char.fit_transform(texts)
-    X = (0.65 * Xw) + (0.35 * Xc)
+    X = hstack([Xw.multiply(0.65), Xc.multiply(0.35)])
 
     sim = cosine_similarity(X)
     dist = 1 - sim

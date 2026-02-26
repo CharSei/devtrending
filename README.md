@@ -1,4 +1,4 @@
-# QE Trend Streamlit — Demo Prototype (No API)
+# Deviations Trending MVP
 
 ## Live Demo
 - Starte die App und lade eine `.xlsx` direkt in der UI hoch → Analyse + Dashboard sofort.
