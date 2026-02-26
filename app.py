@@ -352,7 +352,7 @@ else:
         x=alt.X("n_events:Q", title="Anzahl Events im Trend"),
         y=alt.Y("trend_name:N", sort="-x", title="Trend (ganzer Satz)"),
         tooltip=["subcategory","defect_code","n_events","trend_name"]
-    ).add_params(sel).transform_filter(sel | alt.datum.trend_name != None).properties(height=420)
+    ).add_params(sel).properties(height=420)
     st.altair_chart(bar, use_container_width=True)
 
 # Heatmap: total events per group (from rollup)
