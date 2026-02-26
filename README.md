@@ -1,29 +1,19 @@
-# QE Trend Dashboard (Hybrid)
+# QE Trend Streamlit — Demo Prototype (No API)
 
-## Überblick
-- Deterministische Trend-Struktur (Subcategory → Defect Code → Cluster aus Title + Direct cause details)
-- Optional: LLM erzeugt **Trend-Namen als ganze Sätze** + prägnante Summaries (Deutsch)
-- Streamlit Dashboard mit Filtern, Top-Trends, Heatmap und Gruppen-Detailansicht inkl. zugehöriger Events
+## Live Demo
+- Starte die App und lade eine `.xlsx` direkt in der UI hoch → Analyse + Dashboard sofort.
+- Kein API Key erforderlich (deterministische Trend-Sätze & Cluster).
 
-## Lokal starten
+## Repo / Automation (optional)
+- Lege eine `.xlsx` Datei **direkt im Repo-Root** ab (Name egal).
+- Push → GitHub Actions erzeugt `trends.json` im Root und committed die Datei.
+
+## Start lokal
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Hybrid-Workflow (GitHub Actions)
-1. Lege deine Excel-Datei als `data/input.xlsx` ins Repo
-2. Push auf `main` → Workflow generiert `output/trends.json` und committed zurück
-
-### Optional: LLM für Trend-Namen/Summaries
-- Lege ein Repo Secret an: `OPENAI_API_KEY`
-- Optional: `OPENAI_MODEL` (z.B. `gpt-4o-mini`), Standard ist im Workflow gesetzt.
-
-Ohne API Key läuft die Pipeline **rein deterministisch** (Fallback-Texte).
-
-## Dateien
-- `scripts/generate_trends.py`: Deterministische Cluster + optional LLM-Postprocessing
-- `.github/workflows/generate_trends.yml`: Automation
-- `output/trends.json`: Dashboard Input
+## Hinweise
+- Analyse-Reihenfolge: Subcategory → Defect Code → Clustering (nur Title + Direct cause details).
+- Day of Created Date wird **nie** fürs Clustering verwendet (nur angezeigt/mitgeführt).
