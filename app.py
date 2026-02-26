@@ -290,7 +290,12 @@ def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min:
 # UI
 # -----------------------------
 
-st.set_page_config(page_title="Deviations Trending MVP", page_icon="📊", layout="wide")
+st.set_page_config(
+    page_title="Deviations Trending MVP",
+    page_icon="📊",
+    layout="centered",
+    initial_sidebar_state="expanded"
+)
 st.title("📊 Deviations Trending MVP")
 st.caption("Live-Demo: Excel hochladen → Trends sofort als sortierte Liste/Tabelle. Keine API notwendig.")
 
@@ -301,7 +306,6 @@ section[data-testid="stSidebar"] { width: 360px !important; }
 div[data-testid="stMarkdownContainer"] { overflow-wrap: anywhere; }
 div[data-testid="stMarkdownContainer"] p { white-space: normal !important; }
 code { white-space: pre-wrap !important; }
-.block-container { padding-top: 1.1rem; padding-bottom: 1.1rem; }
 </style>
     """,
     unsafe_allow_html=True,
