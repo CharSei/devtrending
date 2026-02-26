@@ -78,41 +78,53 @@ def _map_headers(df: pd.DataFrame) -> pd.DataFrame:
     df = df[~((df["Name (QE)"] == "") & (df["Title (QE)"] == ""))].copy()
     return df
 
-def _keywords(texts, top_k=4):
-    # deterministic simple keyword extraction
+def _keywords_phrases(texts, top_k=6):
+    """Deterministische Phrasenextraktion (Bigrams/Trigrams) für verständliche Trendtitel."""
     stop = set([
         "und","oder","der","die","das","mit","auf","in","von","für","ist","eine","ein","bei",
         "wurde","werden","nicht","zu","als","aufgrund","im","am","an","aus","nach","vor","während",
-        "the","and","or","of","to","in","on","for","with","is","are","was","were"
+        "the","and","or","of","to","in","on","for","with","is","are","was","were","issue","problem"
     ])
     from collections import Counter
     cnt = Counter()
-    for t in texts:
+    def tokens(t):
         t = _clean_text(t).lower().replace("/", " ")
+        toks = []
         for w in t.split():
             w = "".join(ch for ch in w if ch.isalnum())
             if len(w) >= 4 and w not in stop:
-                cnt[w] += 1
-    return [w for w,_ in cnt.most_common(top_k)]
+                toks.append(w)
+        return toks
+
+    for t in texts:
+        toks = tokens(t)
+        for i in range(len(toks)-1):
+            cnt[f"{toks[i]} {toks[i+1]}"] += 1
+        for i in range(len(toks)-2):
+            cnt[f"{toks[i]} {toks[i+1]} {toks[i+2]}"] += 1
+
+    phrases = [p for p,_ in cnt.most_common(top_k)]
+    if not phrases:
+        c2 = Counter()
+        for t in texts:
+            for w in tokens(t):
+                c2[w] += 1
+        phrases = [w for w,_ in c2.most_common(top_k)]
+    return phrases
 
 def _trend_sentence(subcat, defect, titles, causes):
-    kw = _keywords(titles, 4)
-    kw2 = _keywords(causes, 3)
-    merged = []
-    for w in kw + kw2:
-        if w not in merged:
-            merged.append(w)
-    if merged:
-        return f"Mehrere Quality Events zeigen wiederkehrende Probleme im Zusammenhang mit {', '.join(merged[:4])}."
-    return f"Mehrere Quality Events innerhalb von {subcat} / {defect} zeigen ein ähnliches Muster."
+    """Trendname als klarer deutscher Satz."""
+    phrases = _keywords_phrases(titles + causes, top_k=5)
+    core = phrases[0] if phrases else "ähnliche Abweichungen"
+    return f"In der Gruppe {subcat} → {defect} treten wiederholt Abweichungen im Zusammenhang mit \"{core}\" auf."
 
 def _trend_summary(subcat, defect, n, titles, causes):
-    kw = _keywords(titles + causes, 6)
+    phrases = _keywords_phrases(titles + causes, top_k=6)
     examples = "; ".join([_clean_text(t)[:90] + ("…" if len(_clean_text(t)) > 90 else "") for t in titles[:3] if _clean_text(t)])
     if not examples:
         examples = "—"
-    kw_txt = ", ".join(kw) if kw else "—"
-    return f"Die Gruppe ({subcat} → {defect}) umfasst {n} Events. Häufige Stichworte: {kw_txt}. Beispiel-Titel: {examples}."
+    bullets = ", ".join(phrases[:5]) if phrases else "—"
+    return f"Die Gruppe ({subcat} → {defect}) umfasst {n} Events mit ähnlicher Beschreibung/Ursache. Häufige Muster: {bullets}. Beispiel-Titel: {examples}."
 
 def _cluster_texts(texts, distance_threshold=0.35):
     # returns labels (deterministic) based on TFIDF cosine distance
@@ -259,6 +271,24 @@ st.set_page_config(page_title="Deviations Trending MVP", page_icon="📊", layou
 st.title("📊 Deviations Trending MVP")
 st.caption("Upload Excel für Live-Analyse oder lade vorhandenes trends.json.")
 
+# -----------------------------
+# Layout tweaks (13" friendly)
+# -----------------------------
+st.markdown(
+    """
+<style>
+section[data-testid="stSidebar"] { width: 340px !important; }
+section[data-testid="stSidebar"] > div { padding-top: 1rem; }
+div[data-testid="stMarkdownContainer"] p { white-space: normal !important; }
+div[data-testid="stMarkdownContainer"] { overflow-wrap: anywhere; }
+code { white-space: pre-wrap !important; }
+.block-container { padding-top: 1.2rem; padding-bottom: 1.2rem; }
+</style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 mode = st.radio("Modus", ["Live-Analyse (Excel Upload)", "Repository-Modus (trends.json)"], horizontal=True)
 
 data = None
@@ -298,6 +328,7 @@ roll = pd.DataFrame(data.get("group_rollup", []))
 trends["subcategory"] = trends["subcategory"].fillna("UNSPECIFIED")
 trends["defect_code"] = trends["defect_code"].fillna("UNSPECIFIED")
 trends["is_trend"] = trends["is_trend"].fillna(False)
+trends["cohesion"] = pd.to_numeric(trends.get("cohesion"), errors="coerce")
 
 # Filters
 st.sidebar.header("Filter")
@@ -306,7 +337,7 @@ defects = ["(alle)"] + sorted(trends["defect_code"].unique().tolist())
 
 sel_sub = st.sidebar.selectbox("Event Subcategory", subcats)
 sel_def = st.sidebar.selectbox("Event Defect Code", defects)
-min_events = st.sidebar.slider("Min. Anzahl Events (Trend)", 3, int(max(3, trends["n_events"].max())), 3)
+min_cohesion = st.sidebar.slider("Similarity (Kohäsion) — Mindestwert", 0.40, 0.90, 0.55, 0.01)
 search = st.sidebar.text_input("Textsuche (Trendname/Summary/Titel)")
 
 f = trends.copy()
@@ -317,7 +348,7 @@ if sel_def != "(alle)":
 
 # only keep actual trends for trend list view; non-trend shown in group drilldown
 f_trends = f[f["is_trend"] == True].copy()
-f_trends = f_trends[f_trends["n_events"] >= min_events]
+f_trends = f_trends[f_trends["cohesion"].fillna(0) >= float(min_cohesion)]
 
 if search.strip():
     s = search.strip().lower()
@@ -335,7 +366,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Trends (gefiltert)", int(len(f_trends)))
 c2.metric("Events in Trends", int(f_trends["n_events"].sum()) if not f_trends.empty else 0)
 c3.metric("Gruppen (gesamt)", int(len(roll)) if not roll.empty else 0)
-c4.metric("Max Trendgröße", int(f_trends["n_events"].max()) if not f_trends.empty else 0)
+c4.metric("Ø Similarity", round(float(f_trends["cohesion"].mean()),3) if (not f_trends.empty and "cohesion" in f_trends) else 0)
 
 st.divider()
 
@@ -345,14 +376,17 @@ st.subheader("🔥 Wo liegen die größten Probleme?")
 sel = alt.selection_point(fields=["subcategory","defect_code","trend_name"], empty=True, name="pick")
 
 bar_df = f_trends.sort_values("n_events", ascending=False).head(30)
+bar_df = bar_df.copy()
+bar_df["trend_label"] = bar_df["trend_name"].fillna("").map(lambda s: (s[:70] + "…") if len(s) > 70 else s)
+chart_h = max(260, 22 * len(bar_df))
 if bar_df.empty:
     st.info("Keine Trends für diese Filterkombination gefunden.")
 else:
     bar = alt.Chart(bar_df).mark_bar().encode(
         x=alt.X("n_events:Q", title="Anzahl Events im Trend"),
-        y=alt.Y("trend_name:N", sort="-x", title="Trend (ganzer Satz)"),
-        tooltip=["subcategory","defect_code","n_events","trend_name"]
-    ).add_params(sel).properties(height=420)
+        y=alt.Y("trend_label:N", sort="-x", title="Trend"),
+        tooltip=["subcategory","defect_code","n_events","cohesion","trend_name"]
+    ).add_params(sel).properties(height=chart_h)
     st.altair_chart(bar, use_container_width=True)
 
 # Heatmap: total events per group (from rollup)
@@ -366,12 +400,33 @@ else:
         y=alt.Y("subcategory:N", title="Subcategory"),
         color=alt.Color("n_events_group:Q", title="Events in Gruppe"),
         tooltip=["subcategory","defect_code","n_events_group"]
-    ).add_params(heat_sel).properties(height=420)
+    ).add_params(heat_sel).properties(height=chart_h)
     st.altair_chart(heat, use_container_width=True)
 
 st.divider()
 
 # Drilldown: Group overview -> trends and events
+st.subheader("📋 Trend-Liste (gefiltert)")
+if f_trends.empty:
+    st.info("Keine Trends für die aktuelle Filterkombination.")
+else:
+    tbl = f_trends[["subcategory","defect_code","n_events","cohesion","trend_name","trend_summary"]].copy()
+    tbl = tbl.sort_values(["n_events","cohesion"], ascending=[False, False])
+    st.dataframe(
+        tbl,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "subcategory": st.column_config.TextColumn("Subcategory"),
+            "defect_code": st.column_config.TextColumn("Defect Code"),
+            "n_events": st.column_config.NumberColumn("Events", format="%d"),
+            "cohesion": st.column_config.NumberColumn("Similarity", format="%.3f"),
+            "trend_name": st.column_config.TextColumn("Trend (Satz)"),
+            "trend_summary": st.column_config.TextColumn("Zusammenfassung"),
+        },
+        height=min(520, 36 + 28 * min(len(tbl), 15)),
+    )
+
 st.subheader("🧩 Trends innerhalb der Gruppen + zugehörige Events")
 
 # Determine active selection from charts is not directly available as value in Streamlit,
@@ -405,7 +460,7 @@ if drill_sub != "(wähle)" and drill_def != "(wähle)":
             n = int(row["n_events"])
             cohesion = row.get("cohesion", None)
             header = f"{tname}  (n={n}" + (f", cohesion={cohesion}" if cohesion is not None else "") + ")"
-            with st.expander(header, expanded=True):
+            with st.expander(header if len(header)<=120 else header[:120]+"…", expanded=True):
                 st.write(row.get("trend_summary") or "")
                 qe = row.get("qe_numbers", [])
                 st.write(f"**QE Numbers ({len(qe)}):**")

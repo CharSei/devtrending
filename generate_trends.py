@@ -76,40 +76,53 @@ def _map_headers(df: pd.DataFrame) -> pd.DataFrame:
     df = df[~((df["Name (QE)"] == "") & (df["Title (QE)"] == ""))].copy()
     return df
 
-def _keywords(texts, top_k=4):
+def _keywords_phrases(texts, top_k=6):
+    """Deterministische Phrasenextraktion (Bigrams/Trigrams) für verständliche Trendtitel."""
     stop = set([
         "und","oder","der","die","das","mit","auf","in","von","für","ist","eine","ein","bei",
         "wurde","werden","nicht","zu","als","aufgrund","im","am","an","aus","nach","vor","während",
-        "the","and","or","of","to","in","on","for","with","is","are","was","were"
+        "the","and","or","of","to","in","on","for","with","is","are","was","were","issue","problem"
     ])
     from collections import Counter
     cnt = Counter()
-    for t in texts:
+    def tokens(t):
         t = _clean_text(t).lower().replace("/", " ")
+        toks = []
         for w in t.split():
             w = "".join(ch for ch in w if ch.isalnum())
             if len(w) >= 4 and w not in stop:
-                cnt[w] += 1
-    return [w for w,_ in cnt.most_common(top_k)]
+                toks.append(w)
+        return toks
+
+    for t in texts:
+        toks = tokens(t)
+        for i in range(len(toks)-1):
+            cnt[f"{toks[i]} {toks[i+1]}"] += 1
+        for i in range(len(toks)-2):
+            cnt[f"{toks[i]} {toks[i+1]} {toks[i+2]}"] += 1
+
+    phrases = [p for p,_ in cnt.most_common(top_k)]
+    if not phrases:
+        c2 = Counter()
+        for t in texts:
+            for w in tokens(t):
+                c2[w] += 1
+        phrases = [w for w,_ in c2.most_common(top_k)]
+    return phrases
 
 def _trend_sentence(subcat, defect, titles, causes):
-    kw = _keywords(titles, 4)
-    kw2 = _keywords(causes, 3)
-    merged = []
-    for w in kw + kw2:
-        if w not in merged:
-            merged.append(w)
-    if merged:
-        return f"Mehrere Quality Events zeigen wiederkehrende Probleme im Zusammenhang mit {', '.join(merged[:4])}."
-    return f"Mehrere Quality Events innerhalb von {subcat} / {defect} zeigen ein ähnliches Muster."
+    """Trendname als klarer deutscher Satz."""
+    phrases = _keywords_phrases(titles + causes, top_k=5)
+    core = phrases[0] if phrases else "ähnliche Abweichungen"
+    return f"In der Gruppe {subcat} → {defect} treten wiederholt Abweichungen im Zusammenhang mit \"{core}\" auf."
 
 def _trend_summary(subcat, defect, n, titles, causes):
-    kw = _keywords(titles + causes, 6)
+    phrases = _keywords_phrases(titles + causes, top_k=6)
     examples = "; ".join([_clean_text(t)[:90] + ("…" if len(_clean_text(t)) > 90 else "") for t in titles[:3] if _clean_text(t)])
     if not examples:
         examples = "—"
-    kw_txt = ", ".join(kw) if kw else "—"
-    return f"Die Gruppe ({subcat} → {defect}) umfasst {n} Events. Häufige Stichworte: {kw_txt}. Beispiel-Titel: {examples}."
+    bullets = ", ".join(phrases[:5]) if phrases else "—"
+    return f"Die Gruppe ({subcat} → {defect}) umfasst {n} Events mit ähnlicher Beschreibung/Ursache. Häufige Muster: {bullets}. Beispiel-Titel: {examples}."
 
 def _cluster_texts(texts, distance_threshold=0.35):
     if len(texts) == 1:
