@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
-"""Generate trends.json from an Excel file located in repo root (no API required).
-- Picks the most recently modified *.xlsx in the repo root.
-- Writes trends.json in the repo root.
+"""Generate trends.json from latest *.xlsx in repo root (no API).
+This script mirrors the deterministic trend engine used in the Streamlit app.
 """
+
 import json
+import re
 from pathlib import Path
 import sys
 import pandas as pd
-
-# Reuse the same logic as in app.py by importing from scripts module would be cleaner,
-# but for simplicity in GitHub Actions we keep it self-contained.
-# (This file mirrors the deterministic algorithm used in the Streamlit app.)
-
 import numpy as np
+
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.cluster import AgglomerativeClustering
 from scipy.sparse import hstack
+
 
 REQUIRED_FIELDS = [
     "Name (QE)",
@@ -28,7 +25,7 @@ REQUIRED_FIELDS = [
 ]
 
 def _clean_text(x: str) -> str:
-    if x is None or (isinstance(x, float) and np.isnan(x)):
+    if x is None:
         return ""
     x = str(x)
     x = x.replace("\n", " ").replace("\r", " ").replace("\t", " ")
@@ -76,86 +73,119 @@ def _map_headers(df: pd.DataFrame) -> pd.DataFrame:
     df = df[~((df["Name (QE)"] == "") & (df["Title (QE)"] == ""))].copy()
     return df
 
-def _keywords_phrases(texts, top_k=6):
-    """Deterministische Phrasenextraktion (Bigrams/Trigrams) für verständliche Trendtitel."""
+def _tokenize(t: str):
+    t = _clean_text(t).lower().replace("/", " ")
+    out = []
+    for w in t.split():
+        w = "".join(ch for ch in w if ch.isalnum())
+        if len(w) >= 4:
+            out.append(w)
+    return out
+
+def _top_phrases(texts, top_k=8):
     stop = set([
-        "und","oder","der","die","das","mit","auf","in","von","für","ist","eine","ein","bei",
-        "wurde","werden","nicht","zu","als","aufgrund","im","am","an","aus","nach","vor","während",
-        "the","and","or","of","to","in","on","for","with","is","are","was","were","issue","problem"
+        "und","oder","der","die","das","mit","auf","in","von","für","ist","eine","ein","bei","wurde","werden","nicht",
+        "zu","als","aufgrund","im","am","an","aus","nach","vor","während","the","and","or","of","to","in","on","for",
+        "with","is","are","was","were","issue","problem","found","noted"
     ])
     from collections import Counter
     cnt = Counter()
-    def tokens(t):
-        t = _clean_text(t).lower().replace("/", " ")
-        toks = []
-        for w in t.split():
-            w = "".join(ch for ch in w if ch.isalnum())
-            if len(w) >= 4 and w not in stop:
-                toks.append(w)
-        return toks
-
     for t in texts:
-        toks = tokens(t)
+        toks = [w for w in _tokenize(t) if w not in stop]
         for i in range(len(toks)-1):
             cnt[f"{toks[i]} {toks[i+1]}"] += 1
         for i in range(len(toks)-2):
             cnt[f"{toks[i]} {toks[i+1]} {toks[i+2]}"] += 1
-
     phrases = [p for p,_ in cnt.most_common(top_k)]
     if not phrases:
         c2 = Counter()
         for t in texts:
-            for w in tokens(t):
+            for w in [w for w in _tokenize(t) if w not in stop]:
                 c2[w] += 1
         phrases = [w for w,_ in c2.most_common(top_k)]
     return phrases
 
-def _trend_sentence(subcat, defect, titles, causes):
-    """Trendname als klarer deutscher Satz."""
-    phrases = _keywords_phrases(titles + causes, top_k=5)
-    core = phrases[0] if phrases else "ähnliche Abweichungen"
-    return f"In der Gruppe {subcat} → {defect} treten wiederholt Abweichungen im Zusammenhang mit \"{core}\" auf."
+def _domain_trend_title(titles, causes, phrases):
+    """
+    Domain-spezifische, deterministische Trendtitel (ohne API).
+    Nutzt Regex/Keywords, um verständliche Labels wie 'Steckenbleiben des Personenaufzugs' zu erzeugen.
+    """
+    text_blob = " ".join([_clean_text(t) for t in titles] + [_clean_text(c) for c in causes]).lower()
 
-def _trend_summary(subcat, defect, n, titles, causes):
-    phrases = _keywords_phrases(titles + causes, top_k=6)
-    examples = "; ".join([_clean_text(t)[:90] + ("…" if len(_clean_text(t)) > 90 else "") for t in titles[:3] if _clean_text(t)])
-    if not examples:
-        examples = "—"
-    bullets = ", ".join(phrases[:5]) if phrases else "—"
-    return f"Die Gruppe ({subcat} → {defect}) umfasst {n} Events mit ähnlicher Beschreibung/Ursache. Häufige Muster: {bullets}. Beispiel-Titel: {examples}."
+    rules = [
+        (r"\b(personenaufzug|aufzug|elevator|lift)\b.*\b(stecken|steck|blockier|stillstand|stuck|stopp)\b", "Steckenbleiben des Personenaufzugs"),
+        (r"\b(stecken|blockier|stillstand|stuck)\b.*\b(personenaufzug|aufzug|elevator|lift)\b", "Steckenbleiben des Personenaufzugs"),
+        (r"\b(dokumentation|nachweis|protokoll|unterlage|bericht|doku)\b.*\b(fehlend|nicht vorhanden|missing|unklar|unvollständig)\b", "Fehlende oder unvollständige Dokumentation"),
+        (r"\b(fehlend|nicht vorhanden|missing|unvollständig)\b.*\b(dokumentation|nachweis|protokoll|unterlage|bericht|doku)\b", "Fehlende oder unvollständige Dokumentation"),
+    ]
 
-def _cluster_texts(texts, distance_threshold=0.35):
-    if len(texts) == 1:
-        return np.array([0]), np.ones((1,1))
+    for pat, label in rules:
+        if re.search(pat, text_blob):
+            return label
 
+    core = phrases[0] if phrases else "ähnliche Abweichung"
+    core = core.replace("_", " ")
+    core = core[:60] + ("…" if len(core) > 60 else "")
+    return f"Wiederkehrende Abweichung: {core}"
+
+def _domain_trend_summary(subcat, defect, n, phrases, examples):
+    """Kurz & verständlich: gemeinsames Muster + Beispiele."""
+    patt = ", ".join(phrases[:6]) if phrases else "—"
+    ex = "; ".join([e[:110] + ("…" if len(e) > 110 else "") for e in examples]) if examples else "—"
+    return (
+        f"Gruppe {subcat} → {defect}: {n} ähnliche Events. "
+        f"Gemeinsames Muster: {patt}. "
+        f"Repräsentative Beispiele: {ex}."
+    )
+
+def _build_similarity(texts):
     v_word = TfidfVectorizer(ngram_range=(1,2), min_df=1)
     v_char = TfidfVectorizer(analyzer="char_wb", ngram_range=(3,5), min_df=1)
-
     Xw = v_word.fit_transform(texts)
     Xc = v_char.fit_transform(texts)
-    X = hstack([Xw.multiply(0.65), Xc.multiply(0.35)])
+    X = hstack([Xw.multiply(0.70), Xc.multiply(0.30)])
+    return cosine_similarity(X)
 
-    sim = cosine_similarity(X)
-    dist = 1 - sim
+def _connected_components(sim, threshold):
+    n = sim.shape[0]
+    visited = [False]*n
+    comps = []
+    for i in range(n):
+        if visited[i]:
+            continue
+        stack = [i]
+        visited[i] = True
+        comp = []
+        while stack:
+            u = stack.pop()
+            comp.append(u)
+            neigh = [v for v in range(n) if (v != u and sim[u, v] >= threshold)]
+            for v in neigh:
+                if not visited[v]:
+                    visited[v] = True
+                    stack.append(v)
+        comps.append(sorted(comp))
+    comps.sort(key=lambda c: (-len(c), c))
+    return comps
 
-    cl = AgglomerativeClustering(
-        n_clusters=None,
-        metric="precomputed",
-        linkage="average",
-        distance_threshold=distance_threshold
-    )
-    labels = cl.fit_predict(dist)
-    return labels, sim
+def _cohesion(sim, idxs):
+    if len(idxs) < 2:
+        return 0.0
+    sub = sim[np.ix_(idxs, idxs)]
+    tri = sub[np.triu_indices(len(idxs), k=1)]
+    return float(tri.mean()) if tri.size else 0.0
 
-def find_latest_xlsx():
-    files = sorted([p for p in Path(".").glob("*.xlsx") if p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[0] if files else None
+def _representatives(sim, idxs, k=3):
+    sub = sim[np.ix_(idxs, idxs)]
+    scores = sub.mean(axis=1)
+    order = np.argsort(-scores)
+    reps = [idxs[int(i)] for i in order[:min(k, len(idxs))]]
+    return reps
 
-def generate_trends(df: pd.DataFrame):
+def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min: float = 0.58):
     df = _map_headers(df)
-
     trends = []
-    group_rollup = []
+    group_stats = []
 
     grouped = df.groupby(["Event Subcategory (EV)", "Event Defect Code (EV)"], dropna=False, sort=True)
 
@@ -163,90 +193,80 @@ def generate_trends(df: pd.DataFrame):
         subcat = subcat if subcat else "UNSPECIFIED"
         defect = defect if defect else "UNSPECIFIED"
 
-        sem = (g["Title (QE)"].fillna("") + " | " + g["Direct cause details (QE)"].fillna("")).map(_clean_text).tolist()
+        titles = g["Title (QE)"].tolist()
+        causes = g["Direct cause details (QE)"].tolist()
         ids = g["Name (QE)"].tolist()
 
-        group_rollup.append({
+        group_stats.append({
             "subcategory": subcat,
             "defect_code": defect,
             "n_events_group": int(len(g)),
         })
 
         if len(g) < 3:
-            trends.append({
-                "subcategory": subcat,
-                "defect_code": defect,
-                "trend_name": None,
-                "trend_summary": None,
-                "n_events": int(len(g)),
-                "qe_numbers": ids,
-                "aggregated_titles": " | ".join([t for t in g['Title (QE)'].tolist() if t][:8]),
-                "cluster_id": None,
-                "is_trend": False,
-            })
             continue
 
-        labels, sim = _cluster_texts(sem, distance_threshold=0.35)
+        sem = [f"{_clean_text(t)} | {_clean_text(c)}" for t, c in zip(titles, causes)]
+        sim = _build_similarity(sem)
+        comps = _connected_components(sim, threshold=float(sim_threshold))
 
-        g2 = g.copy()
-        g2["__cluster"] = labels
-
-        any_trend = False
-        pos = {i:p for p,i in enumerate(g.index.to_list())}
-
-        for cid, cg in g2.groupby("__cluster", sort=True):
-            if len(cg) < 3:
+        for comp in comps:
+            if len(comp) < 3:
+                continue
+            coh = _cohesion(sim, comp)
+            if coh < float(cohesion_min):
                 continue
 
-            idx = cg.index.to_list()
-            pidx = [pos[i] for i in idx]
-            sub_sim = sim[np.ix_(pidx, pidx)]
-            tri = sub_sim[np.triu_indices(len(pidx), k=1)]
-            cohesion = float(np.mean(tri)) if tri.size else 0.0
-            if cohesion < 0.55:
-                continue
+            comp_titles = [titles[i] for i in comp]
+            comp_causes = [causes[i] for i in comp]
+            comp_ids = [ids[i] for i in comp]
 
-            any_trend = True
-            titles = cg["Title (QE)"].tolist()
-            causes = cg["Direct cause details (QE)"].tolist()
-            trend_name = _trend_sentence(subcat, defect, titles, causes)
-            summary = _trend_summary(subcat, defect, len(cg), titles, causes)
+            phrases = _top_phrases(comp_titles + comp_causes, top_k=8)
+            core = phrases[0] if phrases else "ähnliche Abweichung"
+            trend_title = _domain_trend_title(comp_titles, comp_causes, phrases)
+
+            reps = _representatives(sim, comp, k=3)
+            examples = [ _clean_text(titles[i]) for i in reps if _clean_text(titles[i]) ]
+            examples_txt = "; ".join([e[:110] + ("…" if len(e) > 110 else "") for e in examples]) if examples else "—"
+            patterns_txt = ", ".join(phrases[:6]) if phrases else "—"
+
+            summary = (
+                f"In {subcat} → {defect} treten {len(comp)} ähnliche Events auf. "
+                f"Häufige Muster: {patterns_txt}. "
+                f"Beispiele: {examples_txt}."
+            )
 
             trends.append({
                 "subcategory": subcat,
                 "defect_code": defect,
-                "trend_name": trend_name,
+                "trend_title": trend_title,
                 "trend_summary": summary,
-                "n_events": int(len(cg)),
-                "qe_numbers": cg["Name (QE)"].tolist(),
-                "aggregated_titles": " | ".join([t for t in titles if t][:12]),
-                "cluster_id": int(cid),
-                "is_trend": True,
-                "cohesion": round(cohesion, 3),
+                "n_events": int(len(comp)),
+                "similarity": round(coh, 3),
+                "qe_numbers": comp_ids,
+                "sample_titles": examples,
+                "patterns": phrases[:10],
             })
 
-        if not any_trend:
-            trends.append({
-                "subcategory": subcat,
-                "defect_code": defect,
-                "trend_name": None,
-                "trend_summary": None,
-                "n_events": int(len(g)),
-                "qe_numbers": ids,
-                "aggregated_titles": " | ".join([t for t in g['Title (QE)'].tolist() if t][:8]),
-                "cluster_id": None,
-                "is_trend": False,
-            })
+    trends.sort(key=lambda t: (-t["n_events"], -t["similarity"], t["subcategory"], t["defect_code"], t["trend_title"]))
 
     return {
         "meta": {
-            "version": "demo-prototype-no-api",
-            "trend_definition": ">=3 Events innerhalb Subcategory+Defect und kohäsiver Textcluster (Title+DirectCause).",
-            "note": "Created Date wird nicht fürs Clustering verwendet.",
+            "version": "deviations-trending-mvp-v4",
+            "trend_definition": "Connected components on TFIDF similarity graph within Subcategory+Defect (Title+DirectCause).",
+            "created_date_note": "Day of Created Date is never used for clustering.",
+            "parameters": {
+                "sim_threshold_edge": sim_threshold,
+                "cohesion_min": cohesion_min,
+            }
         },
-        "group_rollup": group_rollup,
+        "group_rollup": group_stats,
         "trends": trends,
     }
+
+def find_latest_xlsx():
+    files = sorted([p for p in Path('.').glob('*.xlsx') if p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
 
 def main():
     xlsx = find_latest_xlsx()
