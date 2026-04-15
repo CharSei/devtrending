@@ -469,12 +469,23 @@ if trends.empty:
     st.warning("Keine Trends gefunden. Tipp: Similarity-Kante senken oder Kohäsion-Minimum senken.")
     st.stop()
 
+if "n_events" not in trends.columns:
+    trends["n_events"] = 0
+if "similarity" not in trends.columns:
+    trends["similarity"] = 0.0
+trends["n_events"] = pd.to_numeric(trends["n_events"], errors="coerce").fillna(0).astype(int)
+trends["similarity"] = pd.to_numeric(trends["similarity"], errors="coerce").fillna(0.0)
+
 # Filters
 subcats = ["(alle)"] + sorted(trends["subcategory"].unique().tolist())
 defects = ["(alle)"] + sorted(trends["defect_code"].unique().tolist())
 sel_sub = st.sidebar.selectbox("Event Subcategory", subcats)
 sel_def = st.sidebar.selectbox("Event Defect Code", defects)
-min_events = st.sidebar.slider("Min. Events pro Trend", 3, int(max(3, trends["n_events"].max())), 3)
+max_events_value = int(trends["n_events"].max()) if not trends["n_events"].empty else 0
+max_events_value = max(1, max_events_value)
+min_events_floor = 1 if max_events_value < 3 else 3
+default_min_events = 3 if max_events_value >= 3 else max_events_value
+min_events = st.sidebar.slider("Min. Events pro Trend", min_events_floor, max_events_value, default_min_events)
 min_sim = st.sidebar.slider("Min. Similarity (Trend)", 0.40, 0.95, 0.58, 0.01)
 search = st.sidebar.text_input("Suche (Titel/Summary/Muster)")
 
