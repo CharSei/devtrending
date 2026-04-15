@@ -121,12 +121,34 @@ def _domain_trend_title(titles, causes, phrases):
 
     for pat, label in rules:
         if re.search(pat, text_blob):
-            return label
+            return f"Trend: {label} tritt wiederholt auf."
 
     core = phrases[0] if phrases else "ähnliche Abweichung"
     core = core.replace("_", " ")
     core = core[:60] + ("…" if len(core) > 60 else "")
-    return f"Wiederkehrende Abweichung: {core}"
+    return f"Trend: Wiederkehrende Abweichung bei {core}."
+
+def _cause_hint(causes, phrases):
+    """Liefert einen klaren Hinweis, ob gemeinsame Ursachen erkennbar sind."""
+    cause_tokens = []
+    for c in causes:
+        cause_tokens.extend(_tokenize(c))
+
+    if not cause_tokens:
+        return "Es gibt derzeit keine belastbaren Hinweise auf eine gemeinsame Ursache."
+
+    from collections import Counter
+    cnt = Counter(cause_tokens)
+    common = [w for w, n in cnt.most_common(6) if n >= 2]
+    if common:
+        hint = ", ".join(common[:4])
+        return f"Es gibt Hinweise auf gemeinsame Ursachen mit den Schwerpunkten: {hint}."
+
+    if phrases:
+        hint = ", ".join(phrases[:3])
+        return f"Es gibt nur schwache Hinweise auf gemeinsame Ursachen, erkennbar über wiederkehrende Muster wie {hint}."
+
+    return "Es gibt nur schwache Hinweise auf gemeinsame Ursachen."
 
 def _domain_trend_summary(subcat, defect, n, phrases, examples):
     """Kurz & verständlich: gemeinsames Muster + Beispiele."""
@@ -184,18 +206,21 @@ def _representatives(sim, idxs, k=3):
 
 def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min: float = 0.58):
     df = _map_headers(df)
+    df["_created_date"] = pd.to_datetime(df["Day of Created Date (QE)"], errors="coerce", dayfirst=True)
     trends = []
     group_stats = []
 
     grouped = df.groupby(["Event Subcategory (EV)", "Event Defect Code (EV)"], dropna=False, sort=True)
 
     for (subcat, defect), g in grouped:
+        g = g.reset_index(drop=True)
         subcat = subcat if subcat else "UNSPECIFIED"
         defect = defect if defect else "UNSPECIFIED"
 
         titles = g["Title (QE)"].tolist()
         causes = g["Direct cause details (QE)"].tolist()
         ids = g["Name (QE)"].tolist()
+        created_dates = g["_created_date"].tolist()
 
         group_stats.append({
             "subcategory": subcat,
@@ -220,6 +245,7 @@ def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min:
             comp_titles = [titles[i] for i in comp]
             comp_causes = [causes[i] for i in comp]
             comp_ids = [ids[i] for i in comp]
+            comp_dates = [created_dates[i] for i in comp]
 
             phrases = _top_phrases(comp_titles + comp_causes, top_k=8)
             core = phrases[0] if phrases else "ähnliche Abweichung"
@@ -230,11 +256,29 @@ def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min:
             examples_txt = "; ".join([e[:110] + ("…" if len(e) > 110 else "") for e in examples]) if examples else "—"
             patterns_txt = ", ".join(phrases[:6]) if phrases else "—"
 
+            cause_hint = _cause_hint(comp_causes, phrases)
             summary = (
-                f"In {subcat} → {defect} treten {len(comp)} ähnliche Events auf. "
-                f"Häufige Muster: {patterns_txt}. "
-                f"Beispiele: {examples_txt}."
+                f"Im Bereich {subcat} mit Defektcode {defect} zeigt sich ein Trend mit {len(comp)} ähnlichen Vorkommnissen. "
+                f"Die wiederkehrenden Muster sind: {patterns_txt}. "
+                f"{cause_hint} "
+                f"Beispielhafte Ereignisse sind: {examples_txt}."
             )
+
+            event_rows = []
+            for i in comp:
+                dt = created_dates[i]
+                event_rows.append({
+                    "qe_number": _clean_text(ids[i]),
+                    "title": _clean_text(titles[i]),
+                    "direct_cause_details": _clean_text(causes[i]),
+                    "day_of_created_date": dt.date().isoformat() if pd.notna(dt) else "",
+                    "subcategory": subcat,
+                    "defect_code": defect,
+                })
+
+            valid_dates = [d for d in comp_dates if pd.notna(d)]
+            date_min = min(valid_dates).date().isoformat() if valid_dates else None
+            date_max = max(valid_dates).date().isoformat() if valid_dates else None
 
             trends.append({
                 "subcategory": subcat,
@@ -246,6 +290,9 @@ def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min:
                 "qe_numbers": comp_ids,
                 "sample_titles": examples,
                 "patterns": phrases[:10],
+                "date_min": date_min,
+                "date_max": date_max,
+                "event_rows": event_rows,
             })
 
     trends.sort(key=lambda t: (-t["n_events"], -t["similarity"], t["subcategory"], t["defect_code"], t["trend_title"]))
