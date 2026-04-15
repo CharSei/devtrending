@@ -2,7 +2,6 @@ import json
 import re
 from pathlib import Path
 from io import BytesIO
-from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -203,7 +202,6 @@ def _representatives(sim, idxs, k=3):
 
 def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min: float = 0.58):
     df = _map_headers(df)
-    df["_created_date"] = pd.to_datetime(df["Day of Created Date (QE)"], errors="coerce", dayfirst=True)
 
     trends = []
     group_stats = []
@@ -211,14 +209,12 @@ def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min:
     grouped = df.groupby(["Event Subcategory (EV)", "Event Defect Code (EV)"], dropna=False, sort=True)
 
     for (subcat, defect), g in grouped:
-        g = g.reset_index(drop=True)
         subcat = subcat if subcat else "UNSPECIFIED"
         defect = defect if defect else "UNSPECIFIED"
 
         titles = g["Title (QE)"].tolist()
         causes = g["Direct cause details (QE)"].tolist()
         ids = g["Name (QE)"].tolist()
-        created_dates = g["_created_date"].tolist()
 
         group_stats.append({
             "subcategory": subcat,
@@ -244,7 +240,6 @@ def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min:
             comp_titles = [titles[i] for i in comp]
             comp_causes = [causes[i] for i in comp]
             comp_ids = [ids[i] for i in comp]
-            comp_dates = [created_dates[i] for i in comp]
 
             phrases = _top_phrases(comp_titles + comp_causes, top_k=8)
             core = phrases[0] if phrases else "ähnliche Abweichung"
@@ -261,22 +256,6 @@ def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min:
                 f"Beispiele: {examples_txt}."
             )
 
-            event_rows = []
-            for i in comp:
-                dt = created_dates[i]
-                event_rows.append({
-                    "qe_number": _clean_text(ids[i]),
-                    "title": _clean_text(titles[i]),
-                    "direct_cause_details": _clean_text(causes[i]),
-                    "day_of_created_date": dt.date().isoformat() if pd.notna(dt) else "",
-                    "subcategory": subcat,
-                    "defect_code": defect,
-                })
-
-            valid_dates = [d for d in comp_dates if pd.notna(d)]
-            date_min = min(valid_dates).date().isoformat() if valid_dates else None
-            date_max = max(valid_dates).date().isoformat() if valid_dates else None
-
             trends.append({
                 "subcategory": subcat,
                 "defect_code": defect,
@@ -287,9 +266,6 @@ def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min:
                 "qe_numbers": comp_ids,
                 "sample_titles": examples,
                 "patterns": phrases[:10],
-                "date_min": date_min,
-                "date_max": date_max,
-                "event_rows": event_rows,
             })
 
     # Sort trends for deterministic prioritization
@@ -309,63 +285,12 @@ def generate_trends(df: pd.DataFrame, sim_threshold: float = 0.62, cohesion_min:
         "trends": trends,
     }
 
-def _excel_bytes(trend_rows: pd.DataFrame, events_df: pd.DataFrame | None = None) -> bytes:
-    out = BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        trend_rows.to_excel(writer, index=False, sheet_name="trend_summary")
-        if events_df is not None and not events_df.empty:
-            events_df.to_excel(writer, index=False, sheet_name="trend_events")
-    out.seek(0)
-    return out.getvalue()
-
-def _parse_iso_date(v):
-    if not v:
-        return None
-    dt = pd.to_datetime(v, errors="coerce")
-    if pd.isna(dt):
-        return None
-    return dt.date()
-
-def _filter_trends_by_date(trends_list, start_date: date, end_date: date):
-    out = []
-    for trend in trends_list:
-        t = dict(trend)
-        events = t.get("event_rows") or []
-        if events:
-            ev_filtered = []
-            for ev in events:
-                d = _parse_iso_date(ev.get("day_of_created_date"))
-                if d is None or (start_date <= d <= end_date):
-                    ev_filtered.append(ev)
-            if not ev_filtered:
-                continue
-            t["event_rows"] = ev_filtered
-            t["qe_numbers"] = [e.get("qe_number", "") for e in ev_filtered if e.get("qe_number")]
-            t["sample_titles"] = [e.get("title", "") for e in ev_filtered if e.get("title")][:3]
-            t["n_events"] = len(ev_filtered)
-            ev_dates = [_parse_iso_date(e.get("day_of_created_date")) for e in ev_filtered]
-            ev_dates = [d for d in ev_dates if d is not None]
-            t["date_min"] = min(ev_dates).isoformat() if ev_dates else None
-            t["date_max"] = max(ev_dates).isoformat() if ev_dates else None
-            out.append(t)
-            continue
-
-        dmin = _parse_iso_date(t.get("date_min"))
-        dmax = _parse_iso_date(t.get("date_max"))
-        if dmin is None and dmax is None:
-            out.append(t)
-            continue
-        dmin = dmin or dmax
-        dmax = dmax or dmin
-        if dmin <= end_date and dmax >= start_date:
-            out.append(t)
-    return out
-
 
 # -----------------------------
 # UI
 # -----------------------------
 
+st.set_page_config(page_title="Deviations Trending MVP", page_icon="📊", layout="wide")
 st.set_page_config(
     page_title="Deviations Trending MVP",
     page_icon="📊",
@@ -382,6 +307,7 @@ section[data-testid="stSidebar"] { width: 360px !important; }
 div[data-testid="stMarkdownContainer"] { overflow-wrap: anywhere; }
 div[data-testid="stMarkdownContainer"] p { white-space: normal !important; }
 code { white-space: pre-wrap !important; }
+.block-container { padding-top: 1.1rem; padding-bottom: 1.1rem; }
 </style>
     """,
     unsafe_allow_html=True,
@@ -415,46 +341,7 @@ cohesion_min = st.sidebar.slider("Trend Similarity — Mindestkohäsion", 0.40, 
                                  help="Wie homogen ein Trend-Cluster im Mittel sein muss.")
 
 if mode == "Live-Analyse (Excel Upload)":
-    df_mapped = _map_headers(df_in.copy())
-    dts = pd.to_datetime(df_mapped["Day of Created Date (QE)"], errors="coerce", dayfirst=True)
-    valid_dts = dts.dropna()
-    if not valid_dts.empty:
-        min_d = valid_dts.min().date()
-        max_d = valid_dts.max().date()
-        selected_date_range = st.sidebar.slider(
-            "Day of Created Date (QE)",
-            min_value=min_d,
-            max_value=max_d,
-            value=(min_d, max_d),
-        )
-        mask = dts.dt.date.between(selected_date_range[0], selected_date_range[1], inclusive="both")
-        df_for_analysis = df_mapped[mask].copy()
-    else:
-        selected_date_range = None
-        df_for_analysis = df_mapped
-    data = generate_trends(df_for_analysis, sim_threshold=sim_edge, cohesion_min=cohesion_min)
-else:
-    trends_raw = data.get("trends", [])
-    dates = []
-    for t in trends_raw:
-        dmin = _parse_iso_date(t.get("date_min"))
-        dmax = _parse_iso_date(t.get("date_max"))
-        if dmin:
-            dates.append(dmin)
-        if dmax:
-            dates.append(dmax)
-    if dates:
-        min_d = min(dates)
-        max_d = max(dates)
-        selected_date_range = st.sidebar.slider(
-            "Day of Created Date (QE)",
-            min_value=min_d,
-            max_value=max_d,
-            value=(min_d, max_d),
-        )
-        data["trends"] = _filter_trends_by_date(trends_raw, selected_date_range[0], selected_date_range[1])
-    else:
-        selected_date_range = None
+    data = generate_trends(df_in, sim_threshold=sim_edge, cohesion_min=cohesion_min)
 
 # download json
 st.download_button(
@@ -469,23 +356,12 @@ if trends.empty:
     st.warning("Keine Trends gefunden. Tipp: Similarity-Kante senken oder Kohäsion-Minimum senken.")
     st.stop()
 
-if "n_events" not in trends.columns:
-    trends["n_events"] = 0
-if "similarity" not in trends.columns:
-    trends["similarity"] = 0.0
-trends["n_events"] = pd.to_numeric(trends["n_events"], errors="coerce").fillna(0).astype(int)
-trends["similarity"] = pd.to_numeric(trends["similarity"], errors="coerce").fillna(0.0)
-
 # Filters
 subcats = ["(alle)"] + sorted(trends["subcategory"].unique().tolist())
 defects = ["(alle)"] + sorted(trends["defect_code"].unique().tolist())
 sel_sub = st.sidebar.selectbox("Event Subcategory", subcats)
 sel_def = st.sidebar.selectbox("Event Defect Code", defects)
-max_events_value = int(trends["n_events"].max()) if not trends["n_events"].empty else 0
-max_events_value = max(1, max_events_value)
-min_events_floor = 1 if max_events_value < 3 else 3
-default_min_events = 3 if max_events_value >= 3 else max_events_value
-min_events = st.sidebar.slider("Min. Events pro Trend", min_events_floor, max_events_value, default_min_events)
+min_events = st.sidebar.slider("Min. Events pro Trend", 3, int(max(3, trends["n_events"].max())), 3)
 min_sim = st.sidebar.slider("Min. Similarity (Trend)", 0.40, 0.95, 0.58, 0.01)
 search = st.sidebar.text_input("Suche (Titel/Summary/Muster)")
 
@@ -538,27 +414,6 @@ st.dataframe(
     height=min(680, 44 + 28 * min(len(tbl), 18)),
 )
 
-download_cols = ["rank","subcategory","defect_code","n_events","similarity","trend_title","trend_summary","date_min","date_max"]
-download_df = tbl[[c for c in download_cols if c in tbl.columns]].copy()
-events_export = []
-for r in tbl.to_dict(orient="records"):
-    for ev in (r.get("event_rows") or []):
-        events_export.append({
-            "rank": r.get("rank"),
-            "trend_title": r.get("trend_title"),
-            "subcategory": r.get("subcategory"),
-            "defect_code": r.get("defect_code"),
-            "similarity": r.get("similarity"),
-            **ev
-        })
-events_export_df = pd.DataFrame(events_export)
-st.download_button(
-    "⬇️ Gefilterte Trendauswertung (Excel) herunterladen",
-    data=_excel_bytes(download_df, events_export_df),
-    file_name="trendauswertung_gefiltert.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-
 st.subheader("🔎 Trend-Details")
 # Provide a selector for trends (from filtered list)
 options = ["(wähle Trend)"] + [
@@ -597,24 +452,6 @@ if choice != "(wähle Trend)":
             st.write(f"- {s}")
     else:
         st.write("—")
-
-    trend_event_rows = pd.DataFrame(row.get("event_rows") or [])
-    trend_summary_df = pd.DataFrame([{
-        "trend_title": row.get("trend_title"),
-        "trend_summary": row.get("trend_summary"),
-        "subcategory": row.get("subcategory"),
-        "defect_code": row.get("defect_code"),
-        "n_events": row.get("n_events"),
-        "similarity": row.get("similarity"),
-        "date_min": row.get("date_min"),
-        "date_max": row.get("date_max"),
-    }])
-    st.download_button(
-        "⬇️ Diese Trendauswertung (Excel) herunterladen",
-        data=_excel_bytes(trend_summary_df, trend_event_rows),
-        file_name=f"trendauswertung_rank_{rank}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
 
 with st.expander("Raw JSON Preview", expanded=False):
     st.json(data)
